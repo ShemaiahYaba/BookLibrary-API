@@ -1,10 +1,7 @@
 """
-Validation logic for book data
+Validation logic for all models
 
-Separating validation into its own module:
-- Makes validation logic reusable
-- Easier to test
-- Clear single responsibility
+Centralized validation ensures data integrity before database operations.
 """
 
 from datetime import datetime
@@ -12,23 +9,17 @@ from exceptions import ValidationError
 
 
 class BookValidator:
-    """Validates book data according to business rules"""
+    """Validates book data"""
     
     @staticmethod
     def validate_required_fields(data: dict, is_update: bool = False) -> None:
-        """
-        Validate that required fields are present
-        
-        Raises:
-            ValidationError: If required fields are missing
-        """
+        """Validate required fields for book"""
         if is_update:
-            # For updates, no fields are strictly required
-            return
+            return  # For updates, no fields are strictly required
         
-        required_fields = ['title', 'author', 'isbn', 'year']
+        required_fields = ['title', 'isbn', 'year', 'author_id']
         for field in required_fields:
-            if field not in data or not data[field]:
+            if field not in data or data[field] is None or data[field] == '':
                 raise ValidationError(
                     message=f"Missing required field: {field}",
                     field=field
@@ -36,68 +27,50 @@ class BookValidator:
     
     @staticmethod
     def validate_year(year: int) -> None:
-        """
-        Validate that year is reasonable
-        
-        Args:
-            year: Publication year to validate
-            
-        Raises:
-            ValidationError: If year is invalid
-        """
+        """Validate publication year"""
         try:
             year_int = int(year)
         except (ValueError, TypeError):
-            raise ValidationError(
-                message="Year must be a valid number",
-                field="year"
-            )
+            raise ValidationError("Year must be a valid number", field="year")
         
         current_year = datetime.now().year
         if year_int < 1000 or year_int > current_year:
             raise ValidationError(
-                message=f"Year must be between 1000 and {current_year}",
+                f"Year must be between 1000 and {current_year}",
                 field="year"
             )
     
     @staticmethod
     def validate_isbn(isbn: str) -> None:
-        """
-        Validate ISBN format
-        
-        Args:
-            isbn: ISBN to validate
-            
-        Raises:
-            ValidationError: If ISBN format is invalid
-        """
-        # Remove common separators
+        """Validate ISBN format"""
         clean_isbn = str(isbn).replace('-', '').replace(' ', '')
         
         if not clean_isbn.isdigit():
             raise ValidationError(
-                message="ISBN must contain only digits (hyphens and spaces allowed)",
+                "ISBN must contain only digits",
                 field="isbn"
             )
         
         if len(clean_isbn) not in (10, 13):
             raise ValidationError(
-                message="ISBN must be 10 or 13 digits",
+                "ISBN must be 10 or 13 digits",
                 field="isbn"
             )
     
+    @staticmethod
+    def validate_pages(pages: int) -> None:
+        """Validate page count"""
+        if pages is not None:
+            try:
+                pages_int = int(pages)
+                if pages_int < 1:
+                    raise ValidationError("Pages must be positive", field="pages")
+            except (ValueError, TypeError):
+                raise ValidationError("Pages must be a number", field="pages")
+    
     @classmethod
     def validate_book_data(cls, data: dict, is_update: bool = False) -> None:
-        """
-        Validate all book data
-        
-        Args:
-            data: Dictionary containing book data
-            is_update: Whether this is an update operation
-            
-        Raises:
-            ValidationError: If any validation fails
-        """
+        """Validate all book data"""
         cls.validate_required_fields(data, is_update)
         
         if 'year' in data:
@@ -106,15 +79,104 @@ class BookValidator:
         if 'isbn' in data:
             cls.validate_isbn(data['isbn'])
         
-        # Additional validations can be added here
-        if 'title' in data and len(data['title'].strip()) == 0:
-            raise ValidationError(
-                message="Title cannot be empty",
-                field="title"
-            )
+        if 'pages' in data:
+            cls.validate_pages(data['pages'])
         
-        if 'author' in data and len(data['author'].strip()) == 0:
-            raise ValidationError(
-                message="Author cannot be empty",
-                field="author"
-            )
+        if 'title' in data and not data['title'].strip():
+            raise ValidationError("Title cannot be empty", field="title")
+
+
+class AuthorValidator:
+    """Validates author data"""
+    
+    @staticmethod
+    def validate_required_fields(data: dict, is_update: bool = False) -> None:
+        """Validate required fields for author"""
+        if is_update:
+            return
+        
+        if 'name' not in data or not data['name']:
+            raise ValidationError("Missing required field: name", field="name")
+    
+    @staticmethod
+    def validate_name(name: str) -> None:
+        """Validate author name"""
+        if not name or not name.strip():
+            raise ValidationError("Author name cannot be empty", field="name")
+        
+        if len(name) > 200:
+            raise ValidationError("Author name too long (max 200 characters)", field="name")
+    
+    @classmethod
+    def validate_author_data(cls, data: dict, is_update: bool = False) -> None:
+        """Validate all author data"""
+        cls.validate_required_fields(data, is_update)
+        
+        if 'name' in data:
+            cls.validate_name(data['name'])
+
+
+class CategoryValidator:
+    """Validates category data"""
+    
+    @staticmethod
+    def validate_required_fields(data: dict, is_update: bool = False) -> None:
+        """Validate required fields for category"""
+        if is_update:
+            return
+        
+        if 'name' not in data or not data['name']:
+            raise ValidationError("Missing required field: name", field="name")
+    
+    @staticmethod
+    def validate_name(name: str) -> None:
+        """Validate category name"""
+        if not name or not name.strip():
+            raise ValidationError("Category name cannot be empty", field="name")
+        
+        if len(name) > 100:
+            raise ValidationError("Category name too long (max 100 characters)", field="name")
+    
+    @classmethod
+    def validate_category_data(cls, data: dict, is_update: bool = False) -> None:
+        """Validate all category data"""
+        cls.validate_required_fields(data, is_update)
+        
+        if 'name' in data:
+            cls.validate_name(data['name'])
+
+
+class PaginationValidator:
+    """Validates pagination parameters"""
+    
+    @staticmethod
+    def validate_pagination(page: int = None, per_page: int = None) -> tuple:
+        """
+        Validate and return pagination parameters
+        
+        Returns:
+            Tuple of (page, per_page)
+        """
+        # Default values
+        page = page if page is not None else 1
+        per_page = per_page if per_page is not None else 10
+        
+        # Validate page
+        try:
+            page = int(page)
+            if page < 1:
+                raise ValidationError("Page must be >= 1", field="page")
+        except (ValueError, TypeError):
+            raise ValidationError("Page must be a number", field="page")
+        
+        # Validate per_page
+        try:
+            per_page = int(per_page)
+            if per_page < 1:
+                raise ValidationError("Per page must be >= 1", field="per_page")
+            if per_page > 100:
+                raise ValidationError("Per page must be <= 100", field="per_page")
+        except (ValueError, TypeError):
+            raise ValidationError("Per page must be a number", field="per_page")
+        
+        return page, per_page

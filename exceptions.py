@@ -1,11 +1,7 @@
 """
 Custom exceptions for the Book Library API
 
-Using custom exceptions provides:
-- Clear error semantics
-- Better separation of business logic from HTTP responses
-- Easier testing
-- Centralized error handling
+Provides clear error types for different failure scenarios.
 """
 
 
@@ -24,9 +20,25 @@ class ValidationError(BookLibraryError):
 
 class BookNotFoundError(BookLibraryError):
     """Raised when a requested book doesn't exist"""
-    def __init__(self, book_id: int):
+    def __init__(self, book_id: int = None):
         self.book_id = book_id
-        self.message = f"Book with ID {book_id} not found"
+        self.message = f"Book with ID {book_id} not found" if book_id else "Book not found"
+        super().__init__(self.message)
+
+
+class AuthorNotFoundError(BookLibraryError):
+    """Raised when a requested author doesn't exist"""
+    def __init__(self, author_id: int = None):
+        self.author_id = author_id
+        self.message = f"Author with ID {author_id} not found" if author_id else "Author not found"
+        super().__init__(self.message)
+
+
+class CategoryNotFoundError(BookLibraryError):
+    """Raised when a requested category doesn't exist"""
+    def __init__(self, category_id: int = None):
+        self.category_id = category_id
+        self.message = f"Category with ID {category_id} not found" if category_id else "Category not found"
         super().__init__(self.message)
 
 
@@ -38,8 +50,16 @@ class DuplicateISBNError(BookLibraryError):
         super().__init__(self.message)
 
 
-class InvalidDataFormatError(BookLibraryError):
-    """Raised when request data format is invalid"""
-    def __init__(self, message: str = "Invalid data format"):
+class DuplicateCategoryError(BookLibraryError):
+    """Raised when attempting to create a duplicate category"""
+    def __init__(self, name: str):
+        self.name = name
+        self.message = f"Category '{name}' already exists"
+        super().__init__(self.message)
+
+
+class DatabaseError(BookLibraryError):
+    """Raised when a database operation fails"""
+    def __init__(self, message: str = "Database operation failed"):
         self.message = message
         super().__init__(self.message)

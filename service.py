@@ -1,201 +1,367 @@
 """
-Book service layer - contains all business logic
+Service layer with database operations
 
-This service layer:
-- Separates business logic from HTTP/presentation concerns
-- Returns data (not HTTP responses)
-- Raises exceptions (doesn't format error messages)
-- Can be reused in different contexts (CLI, API, tests)
-- Makes the code testable without running Flask
+Handles all business logic with SQLAlchemy ORM.
+Demonstrates:
+- CRUD operations with database
+- Complex queries (search, filter, pagination)
+- JOIN operations
+- Transaction management
 """
 
-from typing import List, Optional
-from models import Book
-from validators import BookValidator
-from exceptions import BookNotFoundError, DuplicateISBNError
+from typing import List, Optional, Dict
+from sqlalchemy import or_, and_
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+
+from database import db
+from models import Book, Author, Category
+from validators import BookValidator, AuthorValidator, CategoryValidator, PaginationValidator
+from exceptions import (
+    BookNotFoundError,
+    AuthorNotFoundError,
+    CategoryNotFoundError,
+    DuplicateISBNError,
+    DuplicateCategoryError,
+    DatabaseError,
+    ValidationError
+)
 
 
 class BookService:
-    """
-    Service layer for book management
+    """Service for book operations"""
     
-    Handles all business logic without knowing about HTTP/Flask.
-    This makes it:
-    - Testable (no need to mock HTTP requests)
-    - Reusable (can use in CLI, GUI, different API frameworks)
-    - Maintainable (business rules in one place)
-    """
-    
-    def __init__(self):
-        """Initialize the book service with empty storage"""
-        self._books: List[Book] = []
-        self._next_id: int = 1
-    
-    def get_all_books(self) -> List[Book]:
+    @staticmethod
+    def get_all_books(page: int = 1, per_page: int = 10, 
+                      search: str = None, category: str = None, 
+                      year: int = None, author_id: int = None) -> Dict:
         """
-        Get all books
-        
-        Returns:
-            List of all books
-        """
-        return self._books.copy()  # Return copy to prevent external modification
-    
-    def get_book_by_id(self, book_id: int) -> Book:
-        """
-        Get a specific book by ID
+        Get all books with optional filtering, search, and pagination
         
         Args:
-            book_id: ID of the book to retrieve
+            page: Page number (1-indexed)
+            per_page: Items per page
+            search: Search term for title/author
+            category: Filter by category name
+            year: Filter by publication year
+            author_id: Filter by author ID
             
         Returns:
-            Book object
-            
-        Raises:
-            BookNotFoundError: If book doesn't exist
+            Dictionary with books, pagination info
         """
-        for book in self._books:
-            if book.id == book_id:
-                return book
+        # Validate pagination
+        page, per_page = PaginationValidator.validate_pagination(page, per_page)
         
-        raise BookNotFoundError(book_id)
+        # Build query
+        query = Book.query
+        
+        # Apply search filter (searches in both title and author name)
+        if search:
+            search_term = f"%{search}%"
+            query = query.join(Author).filter(
+                or_(
+                    Book.title.ilike(search_term),
+                    Author.name.ilike(search_term)
+                )
+            )
+        
+        # Apply category filter
+        if category:
+            query = query.join(Book.categories).filter(Category.name.ilike(f"%{category}%"))
+        
+        # Apply year filter
+        if year:
+            query = query.filter(Book.year == year)
+        
+        # Apply author filter
+        if author_id:
+            query = query.filter(Book.author_id == author_id)
+        
+        # Execute paginated query
+        try:
+            paginated = query.order_by(Book.created_at.desc()).paginate(
+                page=page,
+                per_page=per_page,
+                error_out=False
+            )
+            
+            return {
+                'books': [book.to_dict() for book in paginated.items],
+                'total': paginated.total,
+                'page': page,
+                'per_page': per_page,
+                'pages': paginated.pages,
+                'has_next': paginated.has_next,
+                'has_prev': paginated.has_prev
+            }
+        except SQLAlchemyError as e:
+            raise DatabaseError(f"Failed to fetch books: {str(e)}")
     
-    def create_book(self, data: dict) -> Book:
-        """
-        Create a new book
+    @staticmethod
+    def get_book_by_id(book_id: int) -> Book:
+        """Get a specific book by ID"""
+        book = db.session.get(Book, book_id)
+        if not book:
+            raise BookNotFoundError(book_id)
+        return book
+    
+    @staticmethod
+    def create_book(data: dict) -> Book:
+        """Create a new book"""
+        # Validate data
+        BookValidator.validate_book_data(data)
         
-        Args:
-            data: Dictionary containing book data
-            
-        Returns:
-            Created Book object
-            
-        Raises:
-            ValidationError: If data is invalid
-            DuplicateISBNError: If ISBN already exists
-        """
-        # Validate the data
-        BookValidator.validate_book_data(data, is_update=False)
+        # Check if author exists
+        author = db.session.get(Author, data['author_id'])
+        if not author:
+            raise AuthorNotFoundError(data['author_id'])
         
         # Check for duplicate ISBN
-        isbn = data['isbn']
-        if self._isbn_exists(isbn):
-            raise DuplicateISBNError(isbn)
+        existing = Book.query.filter_by(isbn=data['isbn']).first()
+        if existing:
+            raise DuplicateISBNError(data['isbn'])
         
-        # Create the book
-        book = Book(
-            id=self._next_id,
-            title=data['title'].strip(),
-            author=data['author'].strip(),
-            isbn=isbn,
-            year=int(data['year'])
-        )
-        
-        self._books.append(book)
-        self._next_id += 1
-        
-        return book
+        try:
+            # Create book
+            book = Book(
+                title=data['title'].strip(),
+                isbn=data['isbn'],
+                year=int(data['year']),
+                author_id=data['author_id'],
+                description=data.get('description', '').strip() if data.get('description') else None,
+                pages=int(data['pages']) if data.get('pages') else None
+            )
+            
+            # Add categories if provided
+            if 'category_ids' in data and data['category_ids']:
+                categories = Category.query.filter(Category.id.in_(data['category_ids'])).all()
+                book.categories.extend(categories)
+            
+            db.session.add(book)
+            db.session.commit()
+            
+            return book
+            
+        except IntegrityError:
+            db.session.rollback()
+            raise DuplicateISBNError(data['isbn'])
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to create book: {str(e)}")
     
-    def update_book(self, book_id: int, data: dict) -> Book:
-        """
-        Update an existing book
-        
-        Args:
-            book_id: ID of the book to update
-            data: Dictionary containing fields to update
-            
-        Returns:
-            Updated Book object
-            
-        Raises:
-            BookNotFoundError: If book doesn't exist
-            ValidationError: If data is invalid
-            DuplicateISBNError: If ISBN already exists (when updating ISBN)
-        """
-        # Get the book (raises BookNotFoundError if not found)
-        book = self.get_book_by_id(book_id)
-        
-        # Validate the update data
+    @staticmethod
+    def update_book(book_id: int, data: dict) -> Book:
+        """Update an existing book"""
+        # Validate data
         BookValidator.validate_book_data(data, is_update=True)
         
-        # Check for duplicate ISBN if ISBN is being updated
-        if 'isbn' in data and data['isbn'] != book.isbn:
-            if self._isbn_exists(data['isbn']):
-                raise DuplicateISBNError(data['isbn'])
+        # Get the book
+        book = BookService.get_book_by_id(book_id)
         
-        # Prepare update data with proper types
-        update_data = {}
-        if 'title' in data:
-            update_data['title'] = data['title'].strip()
-        if 'author' in data:
-            update_data['author'] = data['author'].strip()
-        if 'isbn' in data:
-            update_data['isbn'] = data['isbn']
-        if 'year' in data:
-            update_data['year'] = int(data['year'])
-        
-        # Update the book
-        book.update(**update_data)
-        
-        return book
-    
-    def delete_book(self, book_id: int) -> Book:
-        """
-        Delete a book
-        
-        Args:
-            book_id: ID of the book to delete
+        try:
+            # Update fields
+            if 'title' in data:
+                book.title = data['title'].strip()
+            if 'isbn' in data:
+                # Check for duplicate ISBN
+                if data['isbn'] != book.isbn:
+                    existing = Book.query.filter_by(isbn=data['isbn']).first()
+                    if existing:
+                        raise DuplicateISBNError(data['isbn'])
+                book.isbn = data['isbn']
+            if 'year' in data:
+                book.year = int(data['year'])
+            if 'description' in data:
+                book.description = data['description'].strip() if data['description'] else None
+            if 'pages' in data:
+                book.pages = int(data['pages']) if data['pages'] else None
+            if 'author_id' in data:
+                # Verify author exists
+                author = db.session.get(Author, data['author_id'])
+                if not author:
+                    raise AuthorNotFoundError(data['author_id'])
+                book.author_id = data['author_id']
             
-        Returns:
-            Deleted Book object
+            # Update categories if provided
+            if 'category_ids' in data:
+                book.categories.clear()
+                if data['category_ids']:
+                    categories = Category.query.filter(Category.id.in_(data['category_ids'])).all()
+                    book.categories.extend(categories)
             
-        Raises:
-            BookNotFoundError: If book doesn't exist
-        """
-        # Get the book (raises BookNotFoundError if not found)
-        book = self.get_book_by_id(book_id)
-        
-        # Remove from storage
-        self._books.remove(book)
-        
-        return book
-    
-    def _isbn_exists(self, isbn: str, exclude_id: Optional[int] = None) -> bool:
-        """
-        Check if an ISBN already exists
-        
-        Args:
-            isbn: ISBN to check
-            exclude_id: Optional book ID to exclude from check (for updates)
+            db.session.commit()
+            return book
             
-        Returns:
-            True if ISBN exists, False otherwise
-        """
-        for book in self._books:
-            if book.isbn == isbn and book.id != exclude_id:
-                return True
-        return False
+        except IntegrityError:
+            db.session.rollback()
+            raise DuplicateISBNError(data.get('isbn', book.isbn))
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to update book: {str(e)}")
     
-    def get_statistics(self) -> dict:
-        """
-        Get statistics about the book collection
+    @staticmethod
+    def delete_book(book_id: int) -> Book:
+        """Delete a book"""
+        book = BookService.get_book_by_id(book_id)
         
-        Returns:
-            Dictionary with collection statistics
-        """
-        if not self._books:
+        try:
+            db.session.delete(book)
+            db.session.commit()
+            return book
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to delete book: {str(e)}")
+
+
+class AuthorService:
+    """Service for author operations"""
+    
+    @staticmethod
+    def get_all_authors(page: int = 1, per_page: int = 10) -> Dict:
+        """Get all authors with pagination"""
+        page, per_page = PaginationValidator.validate_pagination(page, per_page)
+        
+        try:
+            paginated = Author.query.order_by(Author.name).paginate(
+                page=page,
+                per_page=per_page,
+                error_out=False
+            )
+            
             return {
-                'total_books': 0,
-                'earliest_year': None,
-                'latest_year': None,
-                'unique_authors': 0
+                'authors': [author.to_dict() for author in paginated.items],
+                'total': paginated.total,
+                'page': page,
+                'per_page': per_page,
+                'pages': paginated.pages
             }
+        except SQLAlchemyError as e:
+            raise DatabaseError(f"Failed to fetch authors: {str(e)}")
+    
+    @staticmethod
+    def get_author_by_id(author_id: int, include_books: bool = False) -> Author:
+        """Get a specific author by ID"""
+        author = db.session.get(Author, author_id)
+        if not author:
+            raise AuthorNotFoundError(author_id)
+        return author
+    
+    @staticmethod
+    def create_author(data: dict) -> Author:
+        """Create a new author"""
+        AuthorValidator.validate_author_data(data)
         
-        years = [book.year for book in self._books]
-        authors = {book.author for book in self._books}
+        try:
+            author = Author(
+                name=data['name'].strip(),
+                bio=data.get('bio', '').strip() if data.get('bio') else None,
+                country=data.get('country', '').strip() if data.get('country') else None
+            )
+            
+            db.session.add(author)
+            db.session.commit()
+            return author
+            
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to create author: {str(e)}")
+    
+    @staticmethod
+    def update_author(author_id: int, data: dict) -> Author:
+        """Update an existing author"""
+        AuthorValidator.validate_author_data(data, is_update=True)
         
-        return {
-            'total_books': len(self._books),
-            'earliest_year': min(years),
-            'latest_year': max(years),
-            'unique_authors': len(authors)
-        }
+        author = AuthorService.get_author_by_id(author_id)
+        
+        try:
+            if 'name' in data:
+                author.name = data['name'].strip()
+            if 'bio' in data:
+                author.bio = data['bio'].strip() if data['bio'] else None
+            if 'country' in data:
+                author.country = data['country'].strip() if data['country'] else None
+            
+            db.session.commit()
+            return author
+            
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to update author: {str(e)}")
+    
+    @staticmethod
+    def delete_author(author_id: int) -> Author:
+        """Delete an author (will fail if author has books due to foreign key)"""
+        author = AuthorService.get_author_by_id(author_id)
+        
+        # Check if author has books
+        if author.books.count() > 0:
+            raise ValidationError(
+                f"Cannot delete author with existing books. Delete {author.books.count()} book(s) first."
+            )
+        
+        try:
+            db.session.delete(author)
+            db.session.commit()
+            return author
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to delete author: {str(e)}")
+
+
+class CategoryService:
+    """Service for category operations"""
+    
+    @staticmethod
+    def get_all_categories() -> List[Category]:
+        """Get all categories"""
+        try:
+            return Category.query.order_by(Category.name).all()
+        except SQLAlchemyError as e:
+            raise DatabaseError(f"Failed to fetch categories: {str(e)}")
+    
+    @staticmethod
+    def get_category_by_id(category_id: int) -> Category:
+        """Get a specific category by ID"""
+        category = db.session.get(Category, category_id)
+        if not category:
+            raise CategoryNotFoundError(category_id)
+        return category
+    
+    @staticmethod
+    def create_category(data: dict) -> Category:
+        """Create a new category"""
+        CategoryValidator.validate_category_data(data)
+        
+        # Check for duplicate
+        existing = Category.query.filter_by(name=data['name'].strip()).first()
+        if existing:
+            raise DuplicateCategoryError(data['name'])
+        
+        try:
+            category = Category(
+                name=data['name'].strip(),
+                description=data.get('description', '').strip() if data.get('description') else None
+            )
+            
+            db.session.add(category)
+            db.session.commit()
+            return category
+            
+        except IntegrityError:
+            db.session.rollback()
+            raise DuplicateCategoryError(data['name'])
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to create category: {str(e)}")
+    
+    @staticmethod
+    def delete_category(category_id: int) -> Category:
+        """Delete a category"""
+        category = CategoryService.get_category_by_id(category_id)
+        
+        try:
+            db.session.delete(category)
+            db.session.commit()
+            return category
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            raise DatabaseError(f"Failed to delete category: {str(e)}")
