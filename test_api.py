@@ -13,7 +13,8 @@ import requests
 import json
 from time import sleep
 
-BASE_URL = "http://localhost:5000"
+BASE_URL = "http://localhost:5001
+"
 
 def print_response(response, title):
     """Pretty print API response"""
@@ -311,7 +312,7 @@ def test_api():
 
 if __name__ == "__main__":
     try:
-        print("\n⚠️  Make sure the API is running on http://localhost:5000")
+        print("\n⚠️  Make sure the API is running on http://localhost:5001")
         print("Run: python app.py")
         print("\nPress Enter to start tests...")
         input()

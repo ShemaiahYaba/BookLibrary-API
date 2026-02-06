@@ -3,7 +3,7 @@ Book routes - Blueprint for all book-related endpoints
 """
 
 from flask import Blueprint, request
-from service import BookService
+from services import BookService
 from exceptions import (
     BookNotFoundError,
     AuthorNotFoundError,

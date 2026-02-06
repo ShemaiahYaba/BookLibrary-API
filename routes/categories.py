@@ -3,7 +3,7 @@ Category routes - Blueprint for all category-related endpoints
 """
 
 from flask import Blueprint, request
-from service import CategoryService
+from services import CategoryService
 from exceptions import (
     CategoryNotFoundError,
     ValidationError,

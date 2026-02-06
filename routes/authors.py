@@ -3,7 +3,7 @@ Author routes - Blueprint for all author-related endpoints
 """
 
 from flask import Blueprint, request
-from service import AuthorService
+from services import AuthorService
 from exceptions import (
     AuthorNotFoundError,
     ValidationError,
